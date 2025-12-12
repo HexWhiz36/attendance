@@ -1,5 +1,12 @@
+# System dependencies
+cmake
+
+# Image processing (Use headless for cloud servers!)
+opencv-python-headless
+
+# The heavy lifters
+dlib
+face-recognition
 streamlit
 numpy
-opencv-python-headless
-face-recognition
 pillow
