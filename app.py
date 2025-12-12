@@ -6,39 +6,45 @@ import pandas as pd
 from datetime import datetime
 
 # --- CONFIGURATION ---
-# 1. PAGE SETUP
 st.set_page_config(page_title="AI Attendance", page_icon="📸")
 st.title("📸 Gemini AI Attendance System")
-
-# 2. SIDEBAR FOR API KEY
-with st.sidebar:
-    api_key = st.text_input("Enter Gemini API Key", type="password")
-    st.info("Get key: aistudio.google.com")
-    
-    # Check if DB folder exists
-    if not os.path.exists("student_db"):
-        os.makedirs("student_db")
-        st.warning("Created 'student_db' folder. Please put student photos there!")
 
 # --- FUNCTIONS ---
 
 def load_student_db():
     """Loads student names from the image filenames in student_db folder"""
+    folder_path = "student_db"
     students = {}
-    if os.path.exists("student_db"):
-        for file in os.listdir("student_db"):
-            if file.endswith((".jpg", ".png", ".jpeg")):
-                name = os.path.splitext(file)[0] # removes .jpg
-                students[name] = os.path.join("student_db", file)
+
+    # 1. Create folder if it doesn't exist
+    if not os.path.exists(folder_path):
+        os.makedirs(folder_path)
+        st.toast(f"Created new folder: {folder_path}")
+        return students
+
+    # 2. SAFETY CHECK: Ensure it's actually a folder, not a file
+    if not os.path.isdir(folder_path):
+        st.error(f"⚠️ CRITICAL ERROR: A file named '{folder_path}' exists. Please delete it so the app can create the folder!")
+        return students
+
+    # 3. Load images
+    for file in os.listdir(folder_path):
+        if file.lower().endswith((".jpg", ".png", ".jpeg")):
+            name = os.path.splitext(file)[0]  # removes .jpg
+            students[name] = os.path.join(folder_path, file)
+            
     return students
 
 def verify_identity(reference_path, webcam_image, api_key):
     """Sends both images to Gemini to check if they are the same person"""
     genai.configure(api_key=api_key)
+    # Using 'gemini-1.5-flash' for speed and cost efficiency
     model = genai.GenerativeModel('gemini-1.5-flash')
 
-    # Load the reference image from disk
-    ref_img = Image.open(reference_path)
+    try:
+        ref_img = Image.open(reference_path)
+    except Exception as e:
+        return f"Error loading reference image: {e}"
 
     prompt = """
     You are a Biometric Security Agent.
@@ -54,12 +60,11 @@ def verify_identity(reference_path, webcam_image, api_key):
     Return ONLY the word "MATCH" or "NO_MATCH". Do not add any explanation.
     """
     
-    # Send both images and prompt
     try:
         response = model.generate_content([prompt, ref_img, webcam_image])
         return response.text.strip()
     except Exception as e:
-        return f"Error: {str(e)}"
+        return f"API Error: {str(e)}"
 
 def mark_attendance(name):
     """Saves the record to a CSV file"""
@@ -79,18 +84,24 @@ def mark_attendance(name):
 
 # --- APP INTERFACE ---
 
-# 1. Load Students
+# Sidebar for API Key
+with st.sidebar:
+    api_key = st.text_input("Enter Gemini API Key", type="password")
+    st.markdown("[Get API Key](https://aistudio.google.com/app/apikey)")
+    st.info("Upload student photos to the 'student_db' folder.")
+
+# Load Data
 student_db = load_student_db()
 student_names = list(student_db.keys())
 
 if not student_names:
-    st.error("No images found in 'student_db/'. Please add some photos (e.g., 'john.jpg').")
+    st.warning("⚠️ No database found. Please add student photos (e.g., 'john.jpg') to the `student_db` folder.")
 else:
-    # 2. Select Identity
+    # Select Identity
     st.subheader("1. Who are you?")
     selected_user = st.selectbox("Select your name", student_names)
 
-    # 3. Camera Input
+    # Camera Input
     st.subheader("2. Verify Identity")
     webcam_pic = st.camera_input("Take a selfie")
 
@@ -99,27 +110,26 @@ else:
             st.error("Please provide API Key in sidebar.")
         else:
             with st.spinner("🤖 AI is analyzing your face..."):
-                # Convert webcam input to PIL Image
                 user_img = Image.open(webcam_pic)
                 ref_path = student_db[selected_user]
                 
-                # Call Gemini
                 result = verify_identity(ref_path, user_img, api_key)
                 
                 if "MATCH" in result:
                     st.success(f"✅ Identity Verified! Welcome, {selected_user}.")
                     log_msg = mark_attendance(selected_user)
                     st.toast(log_msg)
+                    st.balloons()
                 elif "NO_MATCH" in result:
-                    st.error("❌ verification Failed. Face does not match our records.")
+                    st.error("❌ Verification Failed. Face does not match our records.")
                 else:
                     st.warning(f"AI Error: {result}")
 
-# 4. View Logs (Admin Panel)
+# View Logs
 st.divider()
 st.subheader("📋 Attendance Log")
 if os.path.exists("attendance.csv"):
     df = pd.read_csv("attendance.csv")
-    st.dataframe(df)
+    st.dataframe(df.sort_values(by="Time", ascending=False)) # Show newest first
 else:
     st.caption("No records yet.")
