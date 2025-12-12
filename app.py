@@ -43,7 +43,7 @@ def load_student_db():
 def verify_identity(reference_path, webcam_image, api_key):
     """Sends both images to Gemini to check if they are the same person"""
     genai.configure(api_key=api_key)
-    model = genai.GenerativeModel('gemini-1.5-flash')
+model = genai.GenerativeModel('gemini-1.5-flash-001')
 
     try:
         ref_img = Image.open(reference_path)
@@ -133,3 +133,4 @@ if os.path.exists("attendance.csv"):
     st.dataframe(df.sort_values(by="Time", ascending=False))
 else:
     st.caption("No records yet.")
+
