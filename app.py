@@ -18,7 +18,46 @@ else:
         st.warning("⚠️ API Key not found in Secrets")
         api_key = st.text_input("Enter Gemini API Key manually", type="password")
 
-# --- FUNCTIONS ---
+# --- SMART MODEL SELECTOR ---
+def get_available_model(api_key):
+    """
+    Automatically finds a working model for this specific API Key.
+    Prioritizes Flash -> Pro -> Legacy Vision.
+    """
+    genai.configure(api_key=api_key)
+    
+    # Preferred order of models (Fastest -> Strongest -> Legacy)
+    preferences = [
+        "gemini-1.5-flash",
+        "gemini-1.5-flash-001",
+        "gemini-1.5-pro",
+        "gemini-1.5-pro-001",
+        "gemini-pro-vision",  # Legacy (Stable)
+        "gemini-1.0-pro-vision-latest"
+    ]
+    
+    try:
+        # Ask Google what models are actually available to THIS key
+        available_models = [m.name.replace("models/", "") for m in genai.list_models()]
+        
+        # 1. Try to find a match from our preference list
+        for model_name in preferences:
+            if model_name in available_models:
+                return genai.GenerativeModel(model_name)
+        
+        # 2. If no exact match, look for ANY flash model
+        for m in available_models:
+            if "flash" in m and "vision" not in m: # Flash usually supports vision by default
+                return genai.GenerativeModel(m)
+                
+        # 3. Fallback: Just return Flash and hope for the best (standard default)
+        return genai.GenerativeModel('gemini-1.5-flash')
+        
+    except Exception as e:
+        # If listing fails, just return the safe default
+        return genai.GenerativeModel('gemini-1.5-flash')
+
+# --- CORE FUNCTIONS ---
 
 def load_student_db():
     folder_path = "student_db"
@@ -29,7 +68,7 @@ def load_student_db():
         return students
 
     if not os.path.isdir(folder_path):
-        st.error(f"⚠️ Error: 'student_db' is a file. Delete it.")
+        st.error(f"⚠️ Error: 'student_db' is a file. Please delete it.")
         return students
 
     for file in os.listdir(folder_path):
@@ -40,11 +79,9 @@ def load_student_db():
     return students
 
 def verify_identity(reference_path, webcam_image, api_key):
-    genai.configure(api_key=api_key)
+    # Use the Auto-Selector to get a working model
+    model = get_available_model(api_key)
     
-    # 1. USE THE STABLE MODEL ONLY (Avoids the 'limit: 0' error)
-    model = genai.GenerativeModel('gemini-1.5-flash')
-
     try:
         ref_img = Image.open(reference_path)
     except Exception as e:
@@ -59,7 +96,7 @@ def verify_identity(reference_path, webcam_image, api_key):
     Output: Return ONLY the word "MATCH" or "NO_MATCH".
     """
     
-    # 2. RETRY LOGIC (Handles the "429 Quota" error)
+    # Retry logic for "Quota Exceeded" (429) errors
     max_retries = 3
     for attempt in range(max_retries):
         try:
@@ -68,18 +105,21 @@ def verify_identity(reference_path, webcam_image, api_key):
         
         except Exception as e:
             error_msg = str(e)
-            # If it's a "Too Many Requests" error (429)
             if "429" in error_msg:
-                if attempt < max_retries - 1:
-                    wait_time = 5 * (attempt + 1) # Wait 5s, then 10s...
-                    st.toast(f"⏳ API Busy. Retrying in {wait_time}s...")
-                    time.sleep(wait_time)
-                    continue
-                else:
-                    return "Error: System is too busy (429). Please wait a minute."
+                wait_time = 5 * (attempt + 1)
+                st.toast(f"⏳ System busy. Retrying in {wait_time}s...")
+                time.sleep(wait_time)
+                continue
+            elif "404" in error_msg:
+                 # If the auto-selected model fails, try one last legacy fallback
+                 try:
+                     fallback = genai.GenerativeModel('gemini-pro-vision')
+                     return fallback.generate_content([prompt, ref_img, webcam_image]).text.strip()
+                 except:
+                     return f"Model Error (404): Your API Key does not have access to Vision models."
             else:
-                # If it's any other error, stop immediately
                 return f"API Error: {error_msg}"
+    return "Error: System timed out."
 
 def mark_attendance(name):
     file_path = "attendance.csv"
