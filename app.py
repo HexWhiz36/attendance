@@ -1,60 +1,139 @@
 import streamlit as st
 import google.generativeai as genai
+from PIL import Image
 import os
+import pandas as pd
+from datetime import datetime
 
-st.set_page_config(page_title="API Diagnostics", page_icon="🔧")
-st.title("🔧 Gemini API Diagnostics")
+# --- CONFIGURATION ---
+st.set_page_config(page_title="AI Attendance", page_icon="📸")
+st.title("📸 Gemini AI Attendance System")
 
-# 1. Print Library Version
-st.write(f"**Library Version:** `google-generativeai {genai.__version__}`")
-
-# 2. Get API Key
+# --- AUTHENTICATION ---
 if "GEMINI_API_KEY" in st.secrets:
     api_key = st.secrets["GEMINI_API_KEY"]
-    st.success("✅ API Key found in secrets.")
 else:
-    api_key = st.text_input("Enter API Key", type="password")
+    with st.sidebar:
+        st.warning("⚠️ API Key not found in Secrets")
+        api_key = st.text_input("Enter Gemini API Key manually", type="password")
 
-if st.button("Run Diagnostics") and api_key:
+# --- FUNCTIONS ---
+
+def load_student_db():
+    folder_path = "student_db"
+    students = {}
+
+    if not os.path.exists(folder_path):
+        os.makedirs(folder_path)
+        return students
+
+    if not os.path.isdir(folder_path):
+        st.error(f"⚠️ Error: 'student_db' is a file. Delete it.")
+        return students
+
+    for file in os.listdir(folder_path):
+        if file.lower().endswith((".jpg", ".png", ".jpeg")):
+            name = os.path.splitext(file)[0]
+            students[name] = os.path.join(folder_path, file)
+            
+    return students
+
+def verify_identity(reference_path, webcam_image, api_key):
+    """Sends both images to Gemini to check if they are the same person"""
     genai.configure(api_key=api_key)
     
-    st.divider()
-    st.subheader("1. Testing Access...")
-    
-    # TEST A: List Available Models
+    # --- CRITICAL FIX: USING YOUR AVAILABLE MODEL ---
+    # Your diagnostics showed you have 'gemini-2.0-flash'
+    model = genai.GenerativeModel('gemini-2.0-flash')
+
     try:
-        st.write("Asking Google: *'What models am I allowed to use?'*")
-        models = list(genai.list_models())
-        
-        found_vision = False
-        st.write("### 📋 Models Available to YOU:")
-        
-        for m in models:
-            # We only care about models that can generate content
-            if 'generateContent' in m.supported_generation_methods:
-                st.code(f"{m.name}")
-                if "vision" in m.name or "flash" in m.name:
-                    found_vision = True
-        
-        if not found_vision:
-            st.error("❌ CRITICAL: Your API key has access to text models, but NO vision models!")
+        ref_img = Image.open(reference_path)
+    except Exception as e:
+        return f"Error loading reference image: {e}"
+
+    prompt = """
+    You are a Biometric Security Agent.
+    I will provide two images.
+    Image 1: Reference Photo (The true owner of the ID).
+    Image 2: Webcam Photo (The person trying to sign in).
+
+    Task:
+    Analyze facial features strictly.
+    Determine if these two images show the SAME person.
+    
+    Output:
+    Return ONLY the word "MATCH" or "NO_MATCH".
+    """
+    
+    try:
+        # Send images to the model
+        response = model.generate_content([prompt, ref_img, webcam_image])
+        return response.text.strip()
+    except Exception as e:
+        return f"AI Error: {str(e)}"
+
+def mark_attendance(name):
+    """Saves the record to a CSV file"""
+    file_path = "attendance.csv"
+    now = datetime.now()
+    date_str = now.strftime("%Y-%m-%d")
+    time_str = now.strftime("%H:%M:%S")
+    
+    if not os.path.isfile(file_path):
+        df = pd.DataFrame(columns=["Name", "Date", "Time", "Status"])
+        df.to_csv(file_path, index=False)
+    
+    new_data = pd.DataFrame([[name, date_str, time_str, "Present"]], columns=["Name", "Date", "Time", "Status"])
+    new_data.to_csv(file_path, mode='a', header=False, index=False)
+    return f"Marked {name} at {time_str}"
+
+# --- APP INTERFACE ---
+
+# 1. Load Data
+student_db = load_student_db()
+student_names = list(student_db.keys())
+
+# 2. Sidebar Info
+with st.sidebar:
+    st.info("Upload photos to 'student_db' folder.")
+    if api_key:
+        st.success("API Key Loaded Securely")
+
+if not student_names:
+    st.warning("⚠️ No database found. Please add student photos (e.g., 'john.jpg') to the `student_db` folder.")
+else:
+    # 3. Main Interface
+    st.subheader("1. Who are you?")
+    selected_user = st.selectbox("Select your name", student_names)
+
+    st.subheader("2. Verify Identity")
+    webcam_pic = st.camera_input("Take a selfie")
+
+    if webcam_pic and st.button("Verify & Mark Attendance"):
+        if not api_key:
+            st.error("❌ Missing API Key. Please configure Streamlit Secrets or enter it in the sidebar.")
         else:
-            st.success("✅ Your key HAS access to vision models.")
+            with st.spinner("🤖 AI is analyzing your face..."):
+                user_img = Image.open(webcam_pic)
+                ref_path = student_db[selected_user]
+                
+                result = verify_identity(ref_path, user_img, api_key)
+                
+                if "MATCH" in result:
+                    st.success(f"✅ Identity Verified! Welcome, {selected_user}.")
+                    log_msg = mark_attendance(selected_user)
+                    st.toast(log_msg)
+                    st.balloons()
+                elif "NO_MATCH" in result:
+                    st.error("❌ Verification Failed. Face does not match our records.")
+                else:
+                    st.warning(f"AI Error: {result}")
 
-    except Exception as e:
-        st.error(f"❌ API CONNECTION FAILED: {str(e)}")
-        st.stop()
-
-    st.divider()
-    st.subheader("2. Testing a Simple Request...")
-    
-    # TEST B: Try a simple text prompt (No images)
-    try:
-        # Use the first available model
-        test_model_name = 'gemini-1.5-flash'
-        st.write(f"Attempting to say 'Hello' using `{test_model_name}`...")
-        model = genai.GenerativeModel(test_model_name)
-        response = model.generate_content("Hello, are you working?")
-        st.success(f"✅ SUCCESS! The model replied: '{response.text}'")
-    except Exception as e:
-        st.error(f"❌ Text Generation Failed: {e}")
+# 4. Logs
+st.divider()
+st.subheader("📋 Attendance Log")
+if os.path.exists("attendance.csv"):
+    df = pd.read_csv("attendance.csv")
+    st.dataframe(df.sort_values(by="Time", ascending=False))
+else:
+    st.caption("No records yet.")
