@@ -10,7 +10,6 @@ st.set_page_config(page_title="AI Attendance", page_icon="📸")
 st.title("📸 Gemini AI Attendance System")
 
 # --- AUTHENTICATION ---
-# Check if API Key exists in secrets, otherwise allow manual input
 if "GEMINI_API_KEY" in st.secrets:
     api_key = st.secrets["GEMINI_API_KEY"]
 else:
@@ -43,7 +42,10 @@ def load_student_db():
 def verify_identity(reference_path, webcam_image, api_key):
     """Sends both images to Gemini to check if they are the same person"""
     genai.configure(api_key=api_key)
-model = genai.GenerativeModel('gemini-1.5-flash-001')
+    
+    # Try the standard Flash model
+    model_name = 'gemini-1.5-flash'
+    model = genai.GenerativeModel(model_name)
 
     try:
         ref_img = Image.open(reference_path)
@@ -53,10 +55,11 @@ model = genai.GenerativeModel('gemini-1.5-flash-001')
     prompt = """
     You are a Biometric Security Agent.
     I will provide two images.
-    Image 1: Reference Photo.
-    Image 2: Webcam Photo.
+    Image 1: Reference Photo (The true owner of the ID).
+    Image 2: Webcam Photo (The person trying to sign in).
 
     Task:
+    Analyze facial features strictly.
     Determine if these two images show the SAME person.
     
     Output:
@@ -64,10 +67,11 @@ model = genai.GenerativeModel('gemini-1.5-flash-001')
     """
     
     try:
+        # Send images to the model
         response = model.generate_content([prompt, ref_img, webcam_image])
         return response.text.strip()
     except Exception as e:
-        return f"API Error: {str(e)}"
+        return f"AI Error: {str(e)}"
 
 def mark_attendance(name):
     """Saves the record to a CSV file"""
@@ -120,6 +124,7 @@ else:
                     st.success(f"✅ Identity Verified! Welcome, {selected_user}.")
                     log_msg = mark_attendance(selected_user)
                     st.toast(log_msg)
+                    st.balloons()
                 elif "NO_MATCH" in result:
                     st.error("❌ Verification Failed. Face does not match our records.")
                 else:
@@ -133,4 +138,3 @@ if os.path.exists("attendance.csv"):
     st.dataframe(df.sort_values(by="Time", ascending=False))
 else:
     st.caption("No records yet.")
-
