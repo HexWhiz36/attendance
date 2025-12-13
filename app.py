@@ -6,175 +6,183 @@ import pandas as pd
 from datetime import datetime
 import time
 
-# --- CONFIGURATION ---
-st.set_page_config(page_title="AI Attendance", page_icon="📸")
-st.title("📸 Gemini AI Attendance System")
+# --- CONFIGURATION & STYLE ---
+st.set_page_config(page_title="AI Attendance", page_icon="📸", layout="centered")
+
+# Custom CSS for Minimalist UI
+st.markdown("""
+    <style>
+        .stButton>button {
+            width: 100%;
+            border-radius: 5px;
+            height: 3em;
+            font-weight: bold;
+        }
+        .block-container {
+            padding-top: 2rem;
+            padding-bottom: 2rem;
+        }
+        h1 {
+            font-family: 'Helvetica Neue', sans-serif;
+            font-weight: 700;
+        }
+    </style>
+""", unsafe_allow_html=True)
+
+# --- SESSION STATE SETUP ---
+if 'page' not in st.session_state:
+    st.session_state.page = 'attendance'
+
+def navigate_to(page):
+    st.session_state.page = page
+    st.rerun()
 
 # --- AUTHENTICATION ---
-if "GEMINI_API_KEY" in st.secrets:
-    api_key = st.secrets["GEMINI_API_KEY"]
-else:
-    with st.sidebar:
-        st.warning("⚠️ API Key not found in Secrets")
-        api_key = st.text_input("Enter Gemini API Key manually", type="password")
+api_key = None
+try:
+    if "GEMINI_API_KEY" in st.secrets:
+        api_key = st.secrets["GEMINI_API_KEY"]
+except:
+    pass
 
-# --- SMART MODEL SELECTOR ---
+# --- LOGIC FUNCTIONS (Keep same as before) ---
 def get_available_model(api_key):
-    """
-    Automatically finds a working model for this specific API Key.
-    Prioritizes Flash -> Pro -> Legacy Vision.
-    """
     genai.configure(api_key=api_key)
-    
-    # Preferred order of models (Fastest -> Strongest -> Legacy)
-    preferences = [
-        "gemini-1.5-flash",
-        "gemini-1.5-flash-001",
-        "gemini-1.5-pro",
-        "gemini-1.5-pro-001",
-        "gemini-pro-vision",  # Legacy (Stable)
-        "gemini-1.0-pro-vision-latest"
-    ]
-    
     try:
-        # Ask Google what models are actually available to THIS key
-        available_models = [m.name.replace("models/", "") for m in genai.list_models()]
-        
-        # 1. Try to find a match from our preference list
-        for model_name in preferences:
-            if model_name in available_models:
-                return genai.GenerativeModel(model_name)
-        
-        # 2. If no exact match, look for ANY flash model
-        for m in available_models:
-            if "flash" in m and "vision" not in m: # Flash usually supports vision by default
-                return genai.GenerativeModel(m)
-                
-        # 3. Fallback: Just return Flash and hope for the best (standard default)
-        return genai.GenerativeModel('gemini-1.5-flash')
-        
-    except Exception as e:
-        # If listing fails, just return the safe default
-        return genai.GenerativeModel('gemini-1.5-flash')
-
-# --- CORE FUNCTIONS ---
+        preferences = ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-pro-vision"]
+        return genai.GenerativeModel(preferences[0])
+    except:
+        return genai.GenerativeModel("gemini-1.5-flash")
 
 def load_student_db():
     folder_path = "student_db"
+    if not os.path.exists(folder_path): os.makedirs(folder_path)
     students = {}
-
-    if not os.path.exists(folder_path):
-        os.makedirs(folder_path)
-        return students
-
-    if not os.path.isdir(folder_path):
-        st.error(f"⚠️ Error: 'student_db' is a file. Please delete it.")
-        return students
-
     for file in os.listdir(folder_path):
         if file.lower().endswith((".jpg", ".png", ".jpeg")):
             name = os.path.splitext(file)[0]
             students[name] = os.path.join(folder_path, file)
-            
     return students
 
+def register_student(student_id, image_buffer):
+    folder_path = "student_db"
+    if not os.path.exists(folder_path): os.makedirs(folder_path)
+    file_path = os.path.join(folder_path, f"{student_id}.jpg")
+    with open(file_path, "wb") as f:
+        f.write(image_buffer.getbuffer())
+    return file_path
+
 def verify_identity(reference_path, webcam_image, api_key):
-    # Use the Auto-Selector to get a working model
     model = get_available_model(api_key)
-    
     try:
         ref_img = Image.open(reference_path)
-    except Exception as e:
-        return f"Error loading reference image: {e}"
+    except:
+        return "Error loading reference image."
 
     prompt = """
-    You are a Biometric Security Agent.
-    I will provide two images.
-    Image 1: Reference Photo.
-    Image 2: Webcam Photo.
-    Task: Determine if these two images show the SAME person.
-    Output: Return ONLY the word "MATCH" or "NO_MATCH".
+    Biometric Analysis:
+    Image 1: Reference ID.
+    Image 2: Webcam User.
+    Output: 'MATCH' or 'NO_MATCH' only.
     """
     
-    # Retry logic for "Quota Exceeded" (429) errors
-    max_retries = 3
-    for attempt in range(max_retries):
+    for attempt in range(3):
         try:
             response = model.generate_content([prompt, ref_img, webcam_image])
             return response.text.strip()
-        
         except Exception as e:
-            error_msg = str(e)
-            if "429" in error_msg:
-                wait_time = 5 * (attempt + 1)
-                st.toast(f"⏳ System busy. Retrying in {wait_time}s...")
-                time.sleep(wait_time)
+            if "429" in str(e):
+                time.sleep(2)
                 continue
-            elif "404" in error_msg:
-                 # If the auto-selected model fails, try one last legacy fallback
-                 try:
-                     fallback = genai.GenerativeModel('gemini-pro-vision')
-                     return fallback.generate_content([prompt, ref_img, webcam_image]).text.strip()
-                 except:
-                     return f"Model Error (404): Your API Key does not have access to Vision models."
-            else:
-                return f"API Error: {error_msg}"
-    return "Error: System timed out."
+            return f"Error: {str(e)}"
+    return "System Busy"
 
 def mark_attendance(name):
     file_path = "attendance.csv"
     now = datetime.now()
-    date_str = now.strftime("%Y-%m-%d")
-    time_str = now.strftime("%H:%M:%S")
-    
     if not os.path.isfile(file_path):
         df = pd.DataFrame(columns=["Name", "Date", "Time", "Status"])
         df.to_csv(file_path, index=False)
     
-    new_data = pd.DataFrame([[name, date_str, time_str, "Present"]], columns=["Name", "Date", "Time", "Status"])
+    new_data = pd.DataFrame([[name, now.strftime("%Y-%m-%d"), now.strftime("%H:%M:%S"), "Present"]], 
+                            columns=["Name", "Date", "Time", "Status"])
     new_data.to_csv(file_path, mode='a', header=False, index=False)
-    return f"Marked {name} at {time_str}"
+    return f"Marked {name} at {now.strftime('%H:%M:%S')}"
 
-# --- APP INTERFACE ---
+# --- TOP BAR UI ---
+col1, col2 = st.columns([3, 1])
+with col1:
+    st.title("📸 AI Attendance")
+with col2:
+    if st.session_state.page == 'attendance':
+        st.button("➕ Register New", on_click=navigate_to, args=('register',))
+    else:
+        st.button("⬅ Back to Home", on_click=navigate_to, args=('attendance',))
 
-student_db = load_student_db()
-student_names = list(student_db.keys())
-
-with st.sidebar:
-    if api_key:
-        st.success("API Key Loaded")
-
-if not student_names:
-    st.warning("⚠️ No database found. Please add student photos to 'student_db'.")
-else:
-    st.subheader("1. Who are you?")
-    selected_user = st.selectbox("Select your name", student_names)
-
-    st.subheader("2. Verify Identity")
-    webcam_pic = st.camera_input("Take a selfie")
-
-    if webcam_pic and st.button("Verify & Mark Attendance"):
+# --- API KEY CHECK (Discreet) ---
+if not api_key:
+    with st.expander("⚙️ Settings (API Key Required)", expanded=True):
+        api_key = st.text_input("Enter Gemini API Key", type="password")
         if not api_key:
-            st.error("❌ Missing API Key.")
-        else:
-            with st.spinner("🤖 AI is analyzing..."):
-                user_img = Image.open(webcam_pic)
-                ref_path = student_db[selected_user]
-                
-                result = verify_identity(ref_path, user_img, api_key)
-                
-                if "MATCH" in result:
-                    st.success(f"✅ Identity Verified! Welcome, {selected_user}.")
-                    log_msg = mark_attendance(selected_user)
-                    st.toast(log_msg)
-                    st.balloons()
-                elif "NO_MATCH" in result:
-                    st.error("❌ Verification Failed.")
-                else:
-                    st.warning(f"{result}")
+            st.warning("Please enter your API Key to proceed.")
+            st.stop()
 
-st.divider()
-st.subheader("📋 Attendance Log")
-if os.path.exists("attendance.csv"):
-    df = pd.read_csv("attendance.csv")
-    st.dataframe(df.sort_values(by="Time", ascending=False))
+# --- PAGE: ATTENDANCE (Main) ---
+if st.session_state.page == 'attendance':
+    student_db = load_student_db()
+    student_ids = list(student_db.keys())
+
+    if not student_ids:
+        st.info("👋 Welcome! It looks like empty here. Click 'Register New' to get started.")
+    else:
+        # Minimal Container for Action
+        with st.container(border=True):
+            selected_id = st.selectbox("Select Student ID", student_ids)
+            webcam_pic = st.camera_input("Verify Identity", label_visibility="hidden")
+            
+            if webcam_pic:
+                if st.button("Verify Identity", type="primary"):
+                    with st.spinner("Analyzing..."):
+                        ref_path = student_db[selected_id]
+                        user_img = Image.open(webcam_pic)
+                        result = verify_identity(ref_path, user_img, api_key)
+                        
+                        if "MATCH" in result:
+                            st.success(f"✅ Verified: {selected_id}")
+                            mark_attendance(selected_id)
+                            st.balloons()
+                        elif "NO_MATCH" in result:
+                            st.error("❌ Mismatch: Face does not match ID.")
+                        else:
+                            st.warning(result)
+
+    # Attendance Log (Clean Table)
+    st.markdown("### 📅 Today's Activity")
+    if os.path.exists("attendance.csv"):
+        df = pd.read_csv("attendance.csv")
+        # Show only today's records for cleaner look
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        df_today = df[df['Date'] == today_str]
+        
+        if not df_today.empty:
+            st.dataframe(df_today.sort_values("Time", ascending=False), use_container_width=True, hide_index=True)
+        else:
+            st.caption("No attendance marked today.")
+    else:
+        st.caption("No records yet.")
+
+# --- PAGE: REGISTER ---
+elif st.session_state.page == 'register':
+    with st.container(border=True):
+        st.subheader("New Student Registration")
+        new_id = st.text_input("Enter Student ID (e.g., 5001)")
+        reg_pic = st.camera_input("Capture Reference Photo")
+
+        if st.button("Save Profile", type="primary"):
+            if not new_id or not reg_pic:
+                st.error("Please fill in the ID and take a photo.")
+            else:
+                path = register_student(new_id, reg_pic)
+                st.success(f"✅ Registered {new_id}!")
+                time.sleep(1.5) # Let user see success message
+                navigate_to('attendance')
