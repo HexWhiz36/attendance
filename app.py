@@ -1,25 +1,20 @@
 # --- THE NUCLEAR FIX: FORCE INSTALL LATEST LIBRARY ---
 import subprocess
 import sys
+import os
 
-# This forces Streamlit to uninstall the old version and get the new one
 try:
     import google.generativeai
-    # If version is too old (doesn't support Flash), upgrade it immediately
     if google.generativeai.__version__ < "0.7.2":
-        print(f"⚠️ Old version {google.generativeai.__version__} detected. Upgrading...")
         subprocess.check_call([sys.executable, "-m", "pip", "install", "--upgrade", "google-generativeai"])
-        # Restart the script to load the new library
         os.execv(sys.executable, ['python'] + sys.argv)
 except ImportError:
     subprocess.check_call([sys.executable, "-m", "pip", "install", "google-generativeai"])
-
 # -----------------------------------------------------
 
 import streamlit as st
 import google.generativeai as genai
 from PIL import Image
-import os
 import pandas as pd
 from datetime import datetime
 import time
@@ -34,8 +29,10 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# --- SESSION STATE ---
+# --- SESSION STATE INITIALIZATION ---
 if 'page' not in st.session_state: st.session_state.page = 'attendance'
+if 'show_logs' not in st.session_state: st.session_state.show_logs = False
+if 'log_mode' not in st.session_state: st.session_state.log_mode = None
 
 def navigate_to(page):
     st.session_state.page = page
@@ -51,33 +48,18 @@ except:
 
 # --- DYNAMIC MODEL FINDER ---
 def get_working_model(api_key):
-    """
-    Asks Google: 'What models can I use?' and picks the best one.
-    """
     genai.configure(api_key=api_key)
     try:
-        # Get all models available to your specific Key
         all_models = list(genai.list_models())
-        
-        # 1. Look for Flash (Best/Fastest)
         for m in all_models:
-            if 'flash' in m.name and 'generateContent' in m.supported_generation_methods:
-                return genai.GenerativeModel(m.name)
-        
-        # 2. Look for Pro Vision (Legacy)
+            if 'flash' in m.name and 'generateContent' in m.supported_generation_methods: return genai.GenerativeModel(m.name)
         for m in all_models:
-            if 'vision' in m.name and 'generateContent' in m.supported_generation_methods:
-                return genai.GenerativeModel(m.name)
-                
-        # 3. Last Resort: Pro
+            if 'vision' in m.name and 'generateContent' in m.supported_generation_methods: return genai.GenerativeModel(m.name)
         return genai.GenerativeModel('gemini-1.5-pro')
-        
-    except Exception as e:
-        # If listing fails, hardcode the safest bet
+    except:
         return genai.GenerativeModel('gemini-1.5-flash')
 
 # --- CORE LOGIC ---
-
 def load_student_db():
     folder_path = "student_db"
     if not os.path.exists(folder_path): os.makedirs(folder_path)
@@ -96,30 +78,31 @@ def register_student(student_id, image_buffer):
         f.write(image_buffer.getbuffer())
     return file_path
 
-def verify_identity(reference_path, webcam_image, api_key):
-    # Use the dynamic finder
-    model = get_working_model(api_key)
+def delete_student(student_id):
+    """Deletes the student image file."""
+    folder_path = "student_db"
+    file_path = os.path.join(folder_path, f"{student_id}.jpg")
     
+    if os.path.exists(file_path):
+        os.remove(file_path)
+        return True
+    return False
+
+def verify_identity(reference_path, webcam_image, api_key):
+    model = get_working_model(api_key)
     try:
         ref_img = Image.open(reference_path)
     except:
         return "Error loading reference image."
 
-    prompt = """
-    Biometric Analysis:
-    Image 1: Reference ID.
-    Image 2: Webcam User.
-    Output: 'MATCH' or 'NO_MATCH' only.
-    """
+    prompt = "Biometric Analysis: Image 1: Reference ID. Image 2: Webcam User. Output: 'MATCH' or 'NO_MATCH' only."
     
     for attempt in range(3):
         try:
             response = model.generate_content([prompt, ref_img, webcam_image])
             return response.text.strip()
         except Exception as e:
-            if "429" in str(e): # Quota limit
-                time.sleep(2)
-                continue
+            if "429" in str(e): time.sleep(2); continue
             return f"Error: {str(e)}"
     return "System Busy"
 
@@ -136,24 +119,25 @@ def mark_attendance(name):
     return f"Marked {name} at {now.strftime('%H:%M:%S')}"
 
 # --- UI LAYOUT ---
-col1, col2 = st.columns([3, 1])
+col1, col2 = st.columns([2, 2]) # Adjusted ratio for better button fit
 with col1:
     st.title("📸 AI Attendance")
-    # Show version for debugging (Optional, remove later)
-    st.caption(f"System v{genai.__version__}") 
+
 with col2:
     if st.session_state.page == 'attendance':
-        st.button("➕ Register New", on_click=navigate_to, args=('register',))
+        # Split the right column into two small columns for the buttons
+        btn_col1, btn_col2 = st.columns(2)
+        with btn_col1:
+            st.button("👥 Student List", on_click=navigate_to, args=('student_list',), key='nav_list')
+        with btn_col2:
+            st.button("➕ Register New", on_click=navigate_to, args=('register',), key='nav_register')
     else:
-        st.button("⬅ Back to Home", on_click=navigate_to, args=('attendance',))
+        st.button("⬅ Back to Home", on_click=navigate_to, args=('attendance',), key='nav_home')
 
-# --- SETTINGS / API KEY ---
 if not api_key:
     with st.expander("⚙️ Settings (API Key Required)", expanded=True):
         api_key = st.text_input("Enter Gemini API Key", type="password")
-        if not api_key:
-            st.warning("Please enter your API Key to proceed.")
-            st.stop()
+        if not api_key: st.warning("Please enter your API Key to proceed."); st.stop()
 
 # --- PAGE: ATTENDANCE ---
 if st.session_state.page == 'attendance':
@@ -168,7 +152,7 @@ if st.session_state.page == 'attendance':
             webcam_pic = st.camera_input("Verify Identity", label_visibility="hidden")
             
             if webcam_pic:
-                if st.button("Verify Identity", type="primary"):
+                if st.button("Verify Identity", type="primary", key='verify_btn'):
                     with st.spinner("Analyzing..."):
                         ref_path = student_db[selected_id]
                         user_img = Image.open(webcam_pic)
@@ -183,8 +167,38 @@ if st.session_state.page == 'attendance':
                         else:
                             st.warning(result)
 
-    # Log
-    st.markdown("### 📅 Today's Activity")
+    # --- HISTORY SECTION ---
+    st.divider()
+    if st.button("📜 View Attendance Log", key='toggle_logs'):
+        st.session_state.show_logs = not st.session_state.show_logs
+
+    if st.session_state.show_logs:
+        st.markdown("### 🗂️ Attendance Records")
+        col_hist1, col_hist2 = st.columns(2)
+        with col_hist1:
+            if st.button("👤 By Student ID", key='btn_sort_id'): st.session_state.log_mode = 'id'
+        with col_hist2:
+            if st.button("📅 By Date", key='btn_sort_date'): st.session_state.log_mode = 'date'
+        
+        if os.path.exists("attendance.csv"):
+            df = pd.read_csv("attendance.csv")
+            if st.session_state.log_mode == 'id':
+                st.info("Showing history for specific student.")
+                search_id = st.selectbox("Select Student ID:", df['Name'].unique())
+                subset = df[df['Name'] == search_id]
+                st.dataframe(subset, use_container_width=True)
+            elif st.session_state.log_mode == 'date':
+                st.info("Showing students present on specific date.")
+                unique_dates = df['Date'].unique()
+                search_date = st.selectbox("Select Date:", unique_dates)
+                subset = df[df['Date'] == search_date]
+                st.dataframe(subset, use_container_width=True)
+        else:
+            st.warning("No attendance records found yet.")
+
+    # --- TODAY'S ACTIVITY ---
+    st.divider()
+    st.markdown("### ⚡ Today's Live Activity")
     if os.path.exists("attendance.csv"):
         df = pd.read_csv("attendance.csv")
         today_str = datetime.now().strftime("%Y-%m-%d")
@@ -203,7 +217,7 @@ elif st.session_state.page == 'register':
         new_id = st.text_input("Enter Student ID (e.g., 5001)")
         reg_pic = st.camera_input("Capture Reference Photo")
 
-        if st.button("Save Profile", type="primary"):
+        if st.button("Save Profile", type="primary", key='btn_save_profile'):
             if not new_id or not reg_pic:
                 st.error("Please fill in the ID and take a photo.")
             else:
@@ -211,3 +225,36 @@ elif st.session_state.page == 'register':
                 st.success(f"✅ Registered {new_id}!")
                 time.sleep(1.5)
                 navigate_to('attendance')
+
+# --- PAGE: STUDENT LIST (NEW) ---
+elif st.session_state.page == 'student_list':
+    st.subheader("👥 Registered Students")
+    
+    student_db = load_student_db()
+    student_ids = list(student_db.keys())
+    
+    if not student_ids:
+        st.warning("No students registered yet.")
+    else:
+        # Display as a table first
+        df_students = pd.DataFrame(student_ids, columns=["Student ID"])
+        st.dataframe(df_students, use_container_width=True, hide_index=True)
+        
+        st.divider()
+        st.subheader("🗑️ Delete Student")
+        st.warning("Warning: This action cannot be undone.")
+        
+        col_del1, col_del2 = st.columns([3, 1])
+        with col_del1:
+            delete_target = st.selectbox("Select Student to Delete", student_ids, key='del_select')
+        with col_del2:
+            # Add some spacing to align button with input
+            st.write("")
+            st.write("")
+            if st.button("❌ Delete", type="primary", key='btn_delete_confirm'):
+                if delete_student(delete_target):
+                    st.success(f"Deleted Student: {delete_target}")
+                    time.sleep(1)
+                    st.rerun()
+                else:
+                    st.error("Error deleting file.")
