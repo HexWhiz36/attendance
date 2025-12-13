@@ -51,6 +51,7 @@ def get_working_model(api_key):
     genai.configure(api_key=api_key)
     try:
         all_models = list(genai.list_models())
+        # Priority: Flash -> Vision -> Pro
         for m in all_models:
             if 'flash' in m.name and 'generateContent' in m.supported_generation_methods: return genai.GenerativeModel(m.name)
         for m in all_models:
@@ -82,7 +83,6 @@ def delete_student(student_id):
     """Deletes the student image file."""
     folder_path = "student_db"
     file_path = os.path.join(folder_path, f"{student_id}.jpg")
-    
     if os.path.exists(file_path):
         os.remove(file_path)
         return True
@@ -95,7 +95,20 @@ def verify_identity(reference_path, webcam_image, api_key):
     except:
         return "Error loading reference image."
 
-    prompt = "Biometric Analysis: Image 1: Reference ID. Image 2: Webcam User. Output: 'MATCH' or 'NO_MATCH' only."
+    # --- STRICTER PROMPT ---
+    prompt = """
+    Role: You are a high-security biometric scanner.
+    Task: Compare Image 1 (Database Record) vs Image 2 (Live Camera).
+    
+    Strict Rules:
+    1. Analyze facial structure, eye shape, nose bridge, and jawline.
+    2. IGNORE lighting, background, or hair style changes.
+    3. If the faces clearly belong to different people, return "NO_MATCH".
+    4. If you are unsure, return "NO_MATCH".
+    5. Only return "MATCH" if the facial features are identical.
+    
+    Response format: Return ONLY the word "MATCH" or "NO_MATCH".
+    """
     
     for attempt in range(3):
         try:
@@ -119,13 +132,12 @@ def mark_attendance(name):
     return f"Marked {name} at {now.strftime('%H:%M:%S')}"
 
 # --- UI LAYOUT ---
-col1, col2 = st.columns([2, 2]) # Adjusted ratio for better button fit
+col1, col2 = st.columns([2, 2])
 with col1:
     st.title("📸 AI Attendance")
 
 with col2:
     if st.session_state.page == 'attendance':
-        # Split the right column into two small columns for the buttons
         btn_col1, btn_col2 = st.columns(2)
         with btn_col1:
             st.button("👥 Student List", on_click=navigate_to, args=('student_list',), key='nav_list')
@@ -153,7 +165,7 @@ if st.session_state.page == 'attendance':
             
             if webcam_pic:
                 if st.button("Verify Identity", type="primary", key='verify_btn'):
-                    with st.spinner("Analyzing..."):
+                    with st.spinner("Analyzing biometric match..."):
                         ref_path = student_db[selected_id]
                         user_img = Image.open(webcam_pic)
                         result = verify_identity(ref_path, user_img, api_key)
@@ -163,7 +175,7 @@ if st.session_state.page == 'attendance':
                             mark_attendance(selected_id)
                             st.balloons()
                         elif "NO_MATCH" in result:
-                            st.error("❌ Mismatch: Face does not match ID.")
+                            st.error(f"❌ Verification Failed. Face does not match ID: {selected_id}")
                         else:
                             st.warning(result)
 
@@ -226,17 +238,15 @@ elif st.session_state.page == 'register':
                 time.sleep(1.5)
                 navigate_to('attendance')
 
-# --- PAGE: STUDENT LIST (NEW) ---
+# --- PAGE: STUDENT LIST ---
 elif st.session_state.page == 'student_list':
     st.subheader("👥 Registered Students")
-    
     student_db = load_student_db()
     student_ids = list(student_db.keys())
     
     if not student_ids:
         st.warning("No students registered yet.")
     else:
-        # Display as a table first
         df_students = pd.DataFrame(student_ids, columns=["Student ID"])
         st.dataframe(df_students, use_container_width=True, hide_index=True)
         
@@ -248,7 +258,6 @@ elif st.session_state.page == 'student_list':
         with col_del1:
             delete_target = st.selectbox("Select Student to Delete", student_ids, key='del_select')
         with col_del2:
-            # Add some spacing to align button with input
             st.write("")
             st.write("")
             if st.button("❌ Delete", type="primary", key='btn_delete_confirm'):
