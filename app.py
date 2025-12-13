@@ -80,7 +80,6 @@ def register_student(student_id, image_buffer):
     return file_path
 
 def delete_student(student_id):
-    """Deletes the student image file."""
     folder_path = "student_db"
     file_path = os.path.join(folder_path, f"{student_id}.jpg")
     if os.path.exists(file_path):
@@ -95,29 +94,35 @@ def verify_identity(reference_path, webcam_image, api_key):
     except:
         return "Error loading reference image."
 
-    # --- STRICTER PROMPT ---
+    # --- SCORE-BASED PROMPT (STRICT) ---
     prompt = """
-    Role: You are a high-security biometric scanner.
-    Task: Compare Image 1 (Database Record) vs Image 2 (Live Camera).
+    You are a strict biometric security system.
+    Task: Compare Image 1 (ID Card) vs Image 2 (Live Face).
     
-    Strict Rules:
-    1. Analyze facial structure, eye shape, nose bridge, and jawline.
-    2. IGNORE lighting, background, or hair style changes.
-    3. If the faces clearly belong to different people, return "NO_MATCH".
-    4. If you are unsure, return "NO_MATCH".
-    5. Only return "MATCH" if the facial features are identical.
+    1. Ignore clothes, background, and lighting. Focus ONLY on facial structure (eyes, nose, jaw).
+    2. Rate the probability that these are the SAME PERSON on a scale of 0 to 100.
     
-    Response format: Return ONLY the word "MATCH" or "NO_MATCH".
+    - 100 = Identical person.
+    - 50 = Looks somewhat similar, but could be a sibling/cousin.
+    - 0 = Clearly different people.
+    
+    CRITICAL OUTPUT RULE: Return ONLY the number (integer). Do not write any words.
     """
     
     for attempt in range(3):
         try:
             response = model.generate_content([prompt, ref_img, webcam_image])
-            return response.text.strip()
+            try:
+                # Convert response to integer score
+                score = int(response.text.strip())
+                return score
+            except ValueError:
+                # If AI returns text instead of a number, fail safe
+                return 0 
         except Exception as e:
             if "429" in str(e): time.sleep(2); continue
-            return f"Error: {str(e)}"
-    return "System Busy"
+            return 0 # Fail on error
+    return 0
 
 def mark_attendance(name):
     file_path = "attendance.csv"
@@ -165,19 +170,24 @@ if st.session_state.page == 'attendance':
             
             if webcam_pic:
                 if st.button("Verify Identity", type="primary", key='verify_btn'):
-                    with st.spinner("Analyzing biometric match..."):
+                    with st.spinner("Calculating Match Score..."):
                         ref_path = student_db[selected_id]
                         user_img = Image.open(webcam_pic)
-                        result = verify_identity(ref_path, user_img, api_key)
                         
-                        if "MATCH" in result:
-                            st.success(f"✅ Verified: {selected_id}")
+                        # Get the Score (0-100)
+                        match_score = verify_identity(ref_path, user_img, api_key)
+                        
+                        # --- THRESHOLD LOGIC ---
+                        # STRICT: Match score must be higher than 75 to pass
+                        if match_score >= 75:
+                            st.success(f"✅ Verified! Match Score: {match_score}%")
                             mark_attendance(selected_id)
                             st.balloons()
-                        elif "NO_MATCH" in result:
-                            st.error(f"❌ Verification Failed. Face does not match ID: {selected_id}")
+                        elif match_score == 0:
+                             st.error("❌ Error: Could not analyze face.")
                         else:
-                            st.warning(result)
+                            st.error(f"❌ Verification Failed. Match Score: {match_score}% (Too Low)")
+                            st.warning("⚠️ Face does not match the ID record.")
 
     # --- HISTORY SECTION ---
     st.divider()
