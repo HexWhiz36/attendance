@@ -9,7 +9,6 @@ import time
 # --- CONFIGURATION & STYLE ---
 st.set_page_config(page_title="AI Attendance", page_icon="📸", layout="centered")
 
-# Custom CSS for Minimalist UI
 st.markdown("""
     <style>
         .stButton>button {
@@ -22,14 +21,10 @@ st.markdown("""
             padding-top: 2rem;
             padding-bottom: 2rem;
         }
-        h1 {
-            font-family: 'Helvetica Neue', sans-serif;
-            font-weight: 700;
-        }
     </style>
 """, unsafe_allow_html=True)
 
-# --- SESSION STATE SETUP ---
+# --- SESSION STATE ---
 if 'page' not in st.session_state:
     st.session_state.page = 'attendance'
 
@@ -45,14 +40,7 @@ try:
 except:
     pass
 
-# --- LOGIC FUNCTIONS (Keep same as before) ---
-def get_available_model(api_key):
-    genai.configure(api_key=api_key)
-    try:
-        preferences = ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-pro-vision"]
-        return genai.GenerativeModel(preferences[0])
-    except:
-        return genai.GenerativeModel("gemini-1.5-flash")
+# --- CORE LOGIC ---
 
 def load_student_db():
     folder_path = "student_db"
@@ -73,7 +61,8 @@ def register_student(student_id, image_buffer):
     return file_path
 
 def verify_identity(reference_path, webcam_image, api_key):
-    model = get_available_model(api_key)
+    genai.configure(api_key=api_key)
+    
     try:
         ref_img = Image.open(reference_path)
     except:
@@ -86,16 +75,32 @@ def verify_identity(reference_path, webcam_image, api_key):
     Output: 'MATCH' or 'NO_MATCH' only.
     """
     
-    for attempt in range(3):
+    # --- THE FIX: TRY MULTIPLE MODELS ---
+    # We try these models in order. If one fails (404/429), we try the next.
+    candidate_models = [
+        "gemini-1.5-flash",          # Fast, New
+        "gemini-1.5-flash-latest",   # Alternative alias
+        "gemini-1.5-pro",            # High Quality
+        "gemini-pro-vision"          # Old Reliable (Legacy)
+    ]
+    
+    last_error = ""
+
+    for model_name in candidate_models:
         try:
+            # print(f"Trying {model_name}...") # Debug log
+            model = genai.GenerativeModel(model_name)
             response = model.generate_content([prompt, ref_img, webcam_image])
             return response.text.strip()
         except Exception as e:
-            if "429" in str(e):
+            last_error = str(e)
+            # If it's a "Too Many Requests" (429), wait a bit then try next model
+            if "429" in last_error:
                 time.sleep(2)
-                continue
-            return f"Error: {str(e)}"
-    return "System Busy"
+            # If 404, just continue to the next model immediately
+            continue
+
+    return f"System Error: Could not connect to any AI model. ({last_error})"
 
 def mark_attendance(name):
     file_path = "attendance.csv"
@@ -109,7 +114,7 @@ def mark_attendance(name):
     new_data.to_csv(file_path, mode='a', header=False, index=False)
     return f"Marked {name} at {now.strftime('%H:%M:%S')}"
 
-# --- TOP BAR UI ---
+# --- UI LAYOUT ---
 col1, col2 = st.columns([3, 1])
 with col1:
     st.title("📸 AI Attendance")
@@ -119,23 +124,33 @@ with col2:
     else:
         st.button("⬅ Back to Home", on_click=navigate_to, args=('attendance',))
 
-# --- API KEY CHECK (Discreet) ---
+# --- SETTINGS / API KEY ---
 if not api_key:
     with st.expander("⚙️ Settings (API Key Required)", expanded=True):
         api_key = st.text_input("Enter Gemini API Key", type="password")
         if not api_key:
             st.warning("Please enter your API Key to proceed.")
             st.stop()
+else:
+    # Optional: Debug tool to see if key works
+    with st.expander("⚙️ Connection Status", expanded=False):
+        st.success("API Key Loaded")
+        if st.button("Test Connection"):
+            try:
+                genai.configure(api_key=api_key)
+                models = [m.name for m in genai.list_models()]
+                st.write(f"Available Models: {len(models)}")
+            except Exception as e:
+                st.error(f"Connection Failed: {e}")
 
-# --- PAGE: ATTENDANCE (Main) ---
+# --- PAGE: ATTENDANCE ---
 if st.session_state.page == 'attendance':
     student_db = load_student_db()
     student_ids = list(student_db.keys())
 
     if not student_ids:
-        st.info("👋 Welcome! It looks like empty here. Click 'Register New' to get started.")
+        st.info("👋 Welcome! Click 'Register New' to get started.")
     else:
-        # Minimal Container for Action
         with st.container(border=True):
             selected_id = st.selectbox("Select Student ID", student_ids)
             webcam_pic = st.camera_input("Verify Identity", label_visibility="hidden")
@@ -156,14 +171,12 @@ if st.session_state.page == 'attendance':
                         else:
                             st.warning(result)
 
-    # Attendance Log (Clean Table)
+    # Log
     st.markdown("### 📅 Today's Activity")
     if os.path.exists("attendance.csv"):
         df = pd.read_csv("attendance.csv")
-        # Show only today's records for cleaner look
         today_str = datetime.now().strftime("%Y-%m-%d")
         df_today = df[df['Date'] == today_str]
-        
         if not df_today.empty:
             st.dataframe(df_today.sort_values("Time", ascending=False), use_container_width=True, hide_index=True)
         else:
@@ -184,5 +197,5 @@ elif st.session_state.page == 'register':
             else:
                 path = register_student(new_id, reg_pic)
                 st.success(f"✅ Registered {new_id}!")
-                time.sleep(1.5) # Let user see success message
+                time.sleep(1.5)
                 navigate_to('attendance')
